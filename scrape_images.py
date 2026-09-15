@@ -3,6 +3,7 @@ import re
 import time
 import hashlib
 import threading
+import uuid
 import requests
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -30,12 +31,43 @@ lock = threading.Lock()
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
-def atomic_write(path, content):
-    """Write file atomically using temp + rename."""
-    tmp_path = path + ".tmp"
-    with open(tmp_path, "w") as f:
-        f.write(content)
-    os.replace(tmp_path, path)
+def atomic_write(path: str, content: str | bytes) -> None:
+    """Publish flushed bytes from an exclusively created sibling file."""
+    tmp_path = path + "." + uuid.uuid4().hex + ".tmp"
+    payload = content.encode("utf-8") if isinstance(content, str) else content
+    created = False
+    try:
+        with open(tmp_path, "xb") as handle:
+            created = True
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        # Only remove this call's unpublished temporary file, never an output.
+        if created and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass  # A failed cleanup must not hide the original I/O error.
+
+
+def record_completion(path: str, slug: str) -> None:
+    """Add one completion atomically while retaining every previous byte."""
+    try:
+        with open(path, "rb") as handle:
+            previous = handle.read()
+    except FileNotFoundError:
+        previous = b""
+    entry = slug.encode("ascii")
+    if entry in previous.splitlines():
+        return
+    separator = b"\n" if previous and not previous.endswith(b"\n") else b""
+    atomic_write(path, previous + separator + entry + b"\n")
+
+
+def image_path(slug: str, out_dir: str) -> str:
+    return os.path.join(out_dir, "piixes.com", "api", "icon", "512", f"{slug}.png")
 
 def load_checkpoint(path):
     """Load slugs from checkpoint file."""
@@ -95,48 +127,44 @@ def scrape_slugs(headers, checkpoint_path):
 
     return list(slugs)
 
-def download(slug, out_dir, seen_hashes, completed_path):
-    # Create nested directory structure
-    img_dir = os.path.join(out_dir, "piixes.com", "api", "icon", "512")
-    os.makedirs(img_dir, exist_ok=True)
-    
-    path = os.path.join(img_dir, f"{slug}.png")
-    
-    # Check if already downloaded in this session or previous
-    if os.path.exists(path):
-        return "skip"
-
+def download(slug: str, out_dir: str, seen_hashes: set[str], completed_path: str) -> str:
+    if not re.fullmatch(r"[a-z0-9-]+", slug):
+        return "fail"
+    path = image_path(slug, out_dir)
+    payload = None
+    published_here = False
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            r = session.get(
-                IMAGE_URL.format(slug),
-                timeout=TIMEOUT
-            )
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if payload is None:
+                response = session.get(IMAGE_URL.format(slug), timeout=TIMEOUT)
+                if response.status_code != 200:
+                    raise requests.HTTPError("Image endpoint returned a non-200 response")
+                payload = response.content
+            digest = sha256(payload)
 
-            if r.status_code != 200:
-                raise Exception("non-200")
-
-            digest = sha256(r.content)
-
+            # Serialize local publication only; network requests stay concurrent.
             with lock:
-                if digest in seen_hashes:
-                    return "dedup"
+                existed = os.path.exists(path)
+                if existed:
+                    with open(path, "rb") as handle:
+                        if handle.read() != payload:
+                            return "fail"  # Preserve older or partial bytes for review.
+                else:
+                    atomic_write(path, payload)
+                    published_here = True
+                record_completion(completed_path, slug)
+                result = "skip" if existed and not published_here else (
+                    "dedup" if digest in seen_hashes else "ok"
+                )
                 seen_hashes.add(digest)
+                return result
 
-            with open(path, "wb") as f:
-                f.write(r.content)
-
-            # Track successful download
-            with lock:
-                with open(completed_path, "a") as cf:
-                    cf.write(f"{slug}\n")
-
-            return "ok"
-
-        except Exception:
+        except (OSError, requests.RequestException):
             if attempt == MAX_RETRIES:
                 return "fail"
             time.sleep(BACKOFF_BASE ** attempt)
+    return "fail"
 
 def main():
     out_dir = input("Output folder path: ").strip()
@@ -183,8 +211,13 @@ def main():
     if completed:
         print(f"[+] Found {len(completed)} previously completed downloads\n")
     
-    # Filter out already completed
-    slugs_to_download = [s for s in slugs if s not in completed]
+    # A completion entry without its image must be retried.
+    slugs_to_download = [
+        slug for slug in slugs
+        if slug not in completed
+        or not re.fullmatch(r"[a-z0-9-]+", slug)
+        or not os.path.isfile(image_path(slug, out_dir))
+    ]
     
     if not slugs_to_download:
         print("[+] All downloads already completed!")
