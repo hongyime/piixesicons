@@ -12,3 +12,7 @@ Updated 2026-09-16 SGT. Baseline triage by Sisyphus-Junior.
 
 ## Next
 - Review and merge PR #50 (dependabot, low-risk CI action bump)
+
+## Reviewed workspace maintenance - 2026-09-27
+
+Publish the reviewed portability and privacy maintenance from the current default branch, preserving concurrent upstream work and original workspace changes. Validation is limited to the documented offline fixtures and hosted checks; no live data job or deployment command was executed locally.
