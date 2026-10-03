@@ -12,6 +12,21 @@ Use Python 3.12 and install the existing pinned dependencies:
 python -m pip install -r requirements.txt
 ```
 
+On Linux, create and activate an isolated environment first:
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+sh setup.sh
+sh run_scraper.sh
+```
+
+The shell launchers work from any current directory, preserve Python's exit
+status, and accept `PYTHON=/path/to/python` to select an interpreter. Setup is
+explicit: the Linux run command does not reinstall dependencies. Windows users
+can continue using `run_scraper.bat`, which includes its existing setup steps,
+or the Python commands below from an activated environment.
+
 ## Usage
 
 ```sh

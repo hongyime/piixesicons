@@ -1,3 +1,7 @@
+## Portability maintenance - 2026-09-27
+
+- Added Linux setup/run entry points and Linux launcher contracts while retaining Windows scripts. Offline Windows regression tests and Linux stub contracts passed; no scraper or dependency installation ran.
+
 # Piixes Icons
 
 Updated 2026-09-16 SGT. Baseline triage by Sisyphus-Junior.
